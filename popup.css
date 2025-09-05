@@ -1,0 +1,69 @@
+:root {
+  --r: 10px;
+}
+
+body {
+  font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+  margin: 14px;
+  min-width: 340px;
+}
+
+h1 {
+  font-size: 16px;
+  margin: 0 0 8px;
+}
+
+textarea {
+  width: 100%;
+  height: 96px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  padding: 8px;
+  border-radius: var(--r);
+  border: 1px solid #ddd;
+}
+
+.row {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+button {
+  padding: 8px 12px;
+  border-radius: var(--r);
+  border: 1px solid #ccc;
+  cursor: pointer;
+}
+
+fieldset {
+  border: 1px solid #eee;
+  border-radius: var(--r);
+  padding: 8px;
+  margin: 10px 0 0;
+}
+
+legend {
+  font-size: 12px;
+  color: #666;
+  padding: 0 6px;
+}
+
+label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 4px 0;
+  font-size: 13px;
+}
+
+.muted {
+  color: #666;
+  font-size: 12px;
+  margin-top: 8px;
+}
+
+.good {
+  color: #0a7;
+  font-weight: 600;
+}

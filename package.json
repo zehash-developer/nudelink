@@ -1,0 +1,11 @@
+{
+  "name": "nudelink",
+  "version": "1.0.0",
+  "description": "Just as the name says - it makes the links nude - strips them of all that extra stuff.",
+  "main": "popup.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "Hashim Raza",
+  "license": "ISC"
+}

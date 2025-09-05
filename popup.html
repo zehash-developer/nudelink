@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Nudelink</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <h1>🔗 Nudelink</h1>
+    <textarea id="url" readonly></textarea>
+    <div class="row">
+      <button id="refresh">Refresh</button>
+      <button id="copy">Copy</button>
+    </div>
+
+    <fieldset>
+      <legend>Options</legend>
+      <label
+        ><input type="checkbox" id="opt-removeReferral" checked /> Remove
+        referral/affiliate params (e.g., <code>ref</code>,
+        <code>affid</code>)</label
+      >
+      <label
+        ><input type="checkbox" id="opt-cleanHash" checked /> Clean tracking in
+        hash fragments (e.g., <code>#utm_source=...</code>)</label
+      >
+    </fieldset>
+
+    <div id="status" class="muted"></div>
+    <script type="module" src="popup.js"></script>
+  </body>
+</html>
