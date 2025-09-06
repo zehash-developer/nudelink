@@ -47,26 +47,53 @@ const loadState = async () => (await chrome.storage.local.get(STATE_KEY))?.[STAT
    3) Core: download + verify + persist
    ========================= */
 
+
+// Assumes these already exist in your file:
+/// const RULES_URL  = "https://rules2.clearurls.xyz/data.minify.json";
+/// const HASH_URL   = "https://rules2.clearurls.xyz/rules.minify.hash";
+/// const STORAGE_KEY = "clearurls_rules_v1";
+/// const fetchText, sha256Hex, saveRules defined as earlier
+
+/** Load currently cached rules metadata if any. */
+const loadCached = async () =>
+  (await chrome.storage.local.get(STORAGE_KEY))?.[STORAGE_KEY] ?? null;
+
 /**
- * Download ClearURLs rules and verify integrity before saving.
- * @returns {Promise<object>} parsed rules JSON
- * @throws {Error} on network/HTTP errors, hash mismatch, or JSON parse errors
+ * Download ClearURLs rules if (and only if) the upstream hash differs.
+ * 1) Read cached {hash}
+ * 2) GET upstream hash
+ * 3) If same → return cached rules (updated:false)
+ * 4) Else GET rules, verify SHA-256 matches upstream hash
+ * 5) Persist {rules, hash, ts} and return (updated:true)
+ *
+ * @returns {Promise<{rules: object|null, updated: boolean}>}
+ * @throws {Error} on network/HTTP errors, hash mismatch, or JSON parse issues
  */
 export const downloadAndCacheRules = async () => {
-  // A) fetch rules + expected hash
-  const [rulesText, expectedHashRaw] = await Promise.all([
-    fetchText(RULES_URL),
-    fetchText(HASH_URL),
-  ]);
-  const expectedHash = expectedHashRaw.trim().toLowerCase();
+  // A) read what we have
+  const cached = await loadCached();
+  const cachedHash = cached?.hash ?? null;
 
-  // B) verify integrity
-  const actualHash = await sha256Hex(rulesText);
-  if (actualHash !== expectedHash) {
-    throw new Error("Rules hash mismatch (integrity check failed)");
+  // B) fetch upstream hash only (small, fast)
+  const upstreamHashRaw = await fetchText(HASH_URL);
+  const upstreamHash = upstreamHashRaw.trim().toLowerCase();
+
+  // C) if hashes match and we have rules, no need to fetch rules again
+  if (cachedHash === upstreamHash) {
+    return { rules: cached.rules, updated: false };
   }
 
-  // C) parse JSON safely
+  // D) hashes differ (or first run) → fetch rules text
+  const rulesText = await fetchText(RULES_URL);
+
+  // E) verify integrity
+  const actualHash = await sha256Hex(rulesText);
+  if (actualHash !== upstreamHash) {
+    // Do not cache; something’s off (partial download/MITM)
+    throw new Error("Rules hash mismatch after download — integrity check failed");
+  }
+
+  // F) parse JSON safely
   let rules;
   try {
     rules = JSON.parse(rulesText);
@@ -74,11 +101,15 @@ export const downloadAndCacheRules = async () => {
     throw new Error(`Rules JSON parse error: ${e?.message || String(e)}`);
   }
 
-  // D) persist with metadata
+  // G) persist new payload
   await saveRules({ rules, ts: Date.now(), hash: actualHash });
-  console.info("[Nudelink] Rules updated and persisted.");
-  return rules;
+  console.info("[Nudelink] Rules updated and persisted (hash changed).");
+
+  return { rules, updated: true };
 };
+
+
+
 
 /* =========================
    4) Scheduling + Backoff
@@ -157,20 +188,24 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
           break;
         }
         case "NUDELINK_DEBUG_STATE": {
-          const [rules, state] = await Promise.all([loadRules(), loadState()]);
+          const payload = await loadRules(); // payload = { rules, ts, hash } | null
+          const state = await loadState();
           sendResponse({
             ok: true,
-            hasRules: Boolean(rules),
+            hasRules: Boolean(payload?.rules),
             state,
-            lastUpdated: rules?.ts || null,
-            hash: rules?.hash || null,
+            lastUpdated: payload?.ts || null,
+            hash: payload?.hash || null,
           });
           break;
         }
         default:
           // Unknown message: respond gracefully (helps avoid silent failures)
           if (msg && msg.type) {
-            sendResponse({ ok: false, error: `Unknown message type: ${msg.type}` });
+            sendResponse({
+              ok: false,
+              error: `Unknown message type: ${msg.type}`,
+            });
           }
       }
     } catch (err) {
