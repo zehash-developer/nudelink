@@ -80,3 +80,103 @@ export const downloadAndCacheRules = async () => {
   return rules;
 };
 
+/* =========================
+   4) Scheduling + Backoff
+   ========================= */
+
+const scheduleDaily = () => chrome.alarms.create(DAILY_ALARM, { periodInMinutes: ONE_DAY_MIN });
+const scheduleRetryIn = (mins) =>
+  chrome.alarms.create(RETRY_ALARM, { when: Date.now() + mins * 60_000 });
+
+const handleSuccess = async () => {
+  await saveState({ backoffIndex: 0 });
+  scheduleDaily(); // ensure we have a daily refresh running
+};
+
+
+const handleFailure = async () => {
+  const state = await loadState();
+  const i = Math.min(state.backoffIndex ?? 0, RETRY_DELAYS_MIN.length - 1);
+  const delay = RETRY_DELAYS_MIN[i];
+  console.warn(`[Nudelink] Fetch failed — retrying in ${delay} min`);
+  await saveState({
+    backoffIndex: Math.min(i + 1, RETRY_DELAYS_MIN.length - 1),
+  });
+  scheduleRetryIn(delay);
+};
+
+/**
+ * Try to refresh rules *now* and set appropriate future alarms.
+ * @returns {Promise<boolean>} true on success, false on failure
+ */
+export const ensureFreshRules = async () => {
+  try {
+    await downloadAndCacheRules();
+    await handleSuccess();
+    return true;
+  } catch (e) {
+    console.warn("[Nudelink] ensureFreshRules error:", e?.message || e);
+    await handleFailure();
+    return false;
+  }
+};
+
+/* =========================
+   5) Lifecycle Hooks
+   ========================= */
+
+// On first install or extension update: fetch immediately and set daily alarm.
+chrome.runtime.onInstalled.addListener(() => {
+  ensureFreshRules();
+});
+
+// Every time the browser starts up: fetch immediately (no fallback) and schedule accordingly.
+chrome.runtime.onStartup.addListener(() => {
+  ensureFreshRules();
+});
+
+// Alarms: either our daily refresh or a one-shot retry triggers a refresh attempt.
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name === DAILY_ALARM || alarm.name === RETRY_ALARM) {
+    ensureFreshRules();
+  }
+});
+
+
+/* =========================
+   6) Messages (manual refresh + debug)
+   ========================= */
+
+chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+  (async () => {
+    try {
+      switch (msg?.type) {
+        case "NUDELINK_REFRESH_RULES": {
+          const ok = await ensureFreshRules();
+          sendResponse({ ok });
+          break;
+        }
+        case "NUDELINK_DEBUG_STATE": {
+          const [rules, state] = await Promise.all([loadRules(), loadState()]);
+          sendResponse({
+            ok: true,
+            hasRules: Boolean(rules),
+            state,
+            lastUpdated: rules?.ts || null,
+            hash: rules?.hash || null,
+          });
+          break;
+        }
+        default:
+          // Unknown message: respond gracefully (helps avoid silent failures)
+          if (msg && msg.type) {
+            sendResponse({ ok: false, error: `Unknown message type: ${msg.type}` });
+          }
+      }
+    } catch (err) {
+      sendResponse({ ok: false, error: err?.message || String(err) });
+    }
+  })();
+  // Return true to keep the channel open for async sendResponse.
+  return true;
+});
