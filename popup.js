@@ -1,146 +1,166 @@
-import { stripTracking } from "./striptracking.js";
 
-// DOM element references
+import { loadClearUrlsRules, applyClearUrls } from "./clearurls-apply.js";
+
+/** DOM refs */
 const urlField = document.getElementById("url");
 const statusLabel = document.getElementById("status");
 const removeReferralCheckbox = document.getElementById("opt-removeReferral");
-const cleanHashCheckbox = document.getElementById("opt-cleanHash");
+const cleanHashCheckbox = document.getElementById("opt-cleanHash"); // optional feature
 const refreshButton = document.getElementById("refresh");
 const copyButton = document.getElementById("copy");
+const updateRulesButton = document.getElementById("updateRules"); // optional button
 
-// Default extension options
-const DEFAULT_OPTIONS = { removeReferral: true, cleanHash: true };
+/** Defaults for persisted options */
+const DEFAULT_OPTS = Object.freeze({
+  removeReferral: true,
+  cleanHash: true, // if false, we strip the hash before applying ClearURLs rules
+});
 
-/**
- * Loads extension options from Chrome storage, falling back to defaults.
- * @returns {Promise<Object>} Options object
- */
+/** Tiny status helper */
+const setStatus = (text, good = false) => {
+  statusLabel.textContent = text;
+  statusLabel.className = good ? "muted good" : "muted";
+};
+
+/** Load options from chrome.storage.sync */
 const loadOptions = async () => {
-  const storedOptions = await chrome.storage.sync.get(
-    Object.keys(DEFAULT_OPTIONS)
-  );
-  return { ...DEFAULT_OPTIONS, ...storedOptions };
-};
-
-/**
- * Saves extension options to Chrome storage.
- * @param {Object} options - Options to save
- */
-const saveOptions = async (options) => {
-  await chrome.storage.sync.set(options);
-};
-
-/**
- * Gets the URL of the currently active browser tab.
- * @returns {Promise<string>} Active tab URL or empty string
- */
-const getActiveTabUrl = async () => {
-  const [activeTab] = await chrome.tabs.query({
-    active: true,
-    currentWindow: true,
-  });
-  return activeTab?.url || "";
-};
-
-/**
- * Cleans the provided URL using stripTracking and user options.
- * If cleanHash is disabled, removes hash before processing.
- * @param {string} url - The URL to clean
- * @param {Object} options - Cleaning options
- * @returns {Object} Result from stripTracking
- */
-const getCleanedUrl = (url, options) => {
-  let inputUrl = url;
-  if (!options.cleanHash) {
-    try {
-      const urlObj = new URL(url);
-      urlObj.hash = "";
-      inputUrl = urlObj.toString();
-    } catch {
-      // Ignore invalid URLs
-    }
+  try {
+    const stored = await chrome.storage.sync.get(Object.keys(DEFAULT_OPTS));
+    return { ...DEFAULT_OPTS, ...stored };
+  } catch (e) {
+    console.warn("[Nudelink] loadOptions failed:", e?.message || e);
+    return { ...DEFAULT_OPTS };
   }
-  return stripTracking(inputUrl, { removeReferral: options.removeReferral });
 };
 
-/**
- * Updates the popup UI with the cleaned URL and status message.
- * @param {string} cleanedUrl - The cleaned URL
- * @param {string} originalUrl - The original URL
- * @param {boolean} wasChanged - Whether the URL was modified
- * @param {string|null} redirectorSource - Redirector source if unwrapped
- * @param {string|null} error - Error message if any
- */
-const updatePopupUI = (
-  cleanedUrl,
-  originalUrl,
-  wasChanged,
-  redirectorSource,
-  error
-) => {
-  if (error) {
-    urlField.value = originalUrl || "";
-    statusLabel.textContent = "Invalid URL";
-    statusLabel.className = "muted";
+/** Save options patch */
+const saveOptions = async (patch) => {
+  try {
+    await chrome.storage.sync.set(patch);
+  } catch (e) {
+    console.warn("[Nudelink] saveOptions failed:", e?.message || e);
+  }
+};
+
+/** Read active tab URL (or empty string on failure) */
+const getActiveTabUrl = async () => {
+  try {
+    const [tab] = await chrome.tabs.query({
+      active: true,
+      currentWindow: true,
+    });
+    return tab?.url || "";
+  } catch (e) {
+    console.error("[Nudelink] tabs.query failed:", e?.message || e);
+    return "";
+  }
+};
+
+/** Ask background.js to refresh rules on-demand */
+const requestRulesUpdate = async () => {
+  try {
+    const res = await chrome.runtime.sendMessage({
+      type: "NUDELINK_REFRESH_RULES",
+    });
+    return Boolean(res?.ok);
+  } catch (e) {
+    console.warn("[Nudelink] sendMessage failed:", e?.message || e);
+    return false;
+  }
+};
+
+/** Optional pre-processing: if cleanHash is off, strip hash before applying rules */
+const maybeStripHash = (inputUrl, cleanHash) => {
+  if (cleanHash) return inputUrl;
+  try {
+    const u = new URL(inputUrl);
+    u.hash = "";
+    return u.toString();
+  } catch {
+    return inputUrl;
+  }
+};
+
+/** Main refresh: load rules → get tab URL → apply rules → render */
+export const refreshPopup = async () => {
+  setStatus("Loading rules…");
+
+  // Load persisted options and reflect in UI
+  const opts = await loadOptions();
+  if (removeReferralCheckbox)
+    removeReferralCheckbox.checked = !!opts.removeReferral;
+  if (cleanHashCheckbox) cleanHashCheckbox.checked = !!opts.cleanHash;
+
+  // Load cached rules (ClearURLs-only; if missing, we show a helpful message)
+  const rules = await loadClearUrlsRules();
+  if (!rules) {
+    const original = await getActiveTabUrl();
+    urlField.value = original || "";
+    setStatus(
+      updateRulesButton
+        ? "Rules not loaded yet. Click ‘Update rules’, then Refresh."
+        : "Rules not loaded yet. Please wait and reopen the popup."
+    );
     return;
   }
-  urlField.value = cleanedUrl;
-  statusLabel.textContent = [
-    redirectorSource ? `Unwrapped from ${redirectorSource}` : null,
-    wasChanged ? "Cleaned ✓" : "Already clean ✨",
-  ]
-    .filter(Boolean)
-    .join(" · ");
-  statusLabel.className = "muted good";
+
+  // Get the current tab URL
+  const original = await getActiveTabUrl();
+  if (!original) {
+    urlField.value = "";
+    setStatus("No active tab URL found.");
+    return;
+  }
+
+  // Apply rules
+  const prepped = maybeStripHash(original, opts.cleanHash);
+  const result = applyClearUrls(prepped, rules, {
+    allowReferral: !opts.removeReferral,
+  });
+
+  if (result.error) {
+    urlField.value = original;
+    setStatus(`Could not clean — ${result.error}`);
+    return;
+  }
+
+  urlField.value = result.url;
+  setStatus(result.changed ? "Cleaned ✓" : "Already clean ✨", true);
 };
 
-/**
- * Refreshes the popup: loads options, gets tab URL, cleans it, and updates UI.
- */
-const refreshPopup = async () => {
-  const options = await loadOptions();
-  removeReferralCheckbox.checked = !!options.removeReferral;
-  cleanHashCheckbox.checked = !!options.cleanHash;
-
-  const originalUrl = await getActiveTabUrl();
-  const {
-    url: cleanedUrl,
-    changed,
-    unwrappedFrom,
-    error,
-  } = getCleanedUrl(originalUrl, options);
-
-  updatePopupUI(cleanedUrl, originalUrl, changed, unwrappedFrom, error);
+/** Copy handler */
+const copyToClipboard = async () => {
+  try {
+    await navigator.clipboard.writeText(urlField.value);
+    setStatus("Copied to clipboard.", true);
+  } catch (e) {
+    alert(`Copy failed: ${e?.message || e}`);
+  }
 };
 
-/**
- * Copies the cleaned URL to the clipboard and updates status.
- */
-const copyCleanedUrl = async () => {
-  await navigator.clipboard.writeText(urlField.value);
-  statusLabel.textContent = "Copied to clipboard.";
-  statusLabel.className = "muted good";
-};
-
-/**
- * Handles option changes, saves them, and refreshes the popup.
- * @param {Event} event - Change event
- * @param {string} optionKey - Option key to update
- */
-const handleOptionChange = async (event, optionKey) => {
-  await saveOptions({ [optionKey]: event.target.checked });
+/** Wire events */
+refreshButton?.addEventListener("click", () => {
+  setStatus("Refreshing…");
   refreshPopup();
-};
+});
 
-// Event listeners for UI actions
-refreshButton.addEventListener("click", refreshPopup);
-copyButton.addEventListener("click", copyCleanedUrl);
-removeReferralCheckbox.addEventListener("change", (e) =>
-  handleOptionChange(e, "removeReferral")
-);
-cleanHashCheckbox.addEventListener("change", (e) =>
-  handleOptionChange(e, "cleanHash")
-);
+copyButton?.addEventListener("click", copyToClipboard);
 
-// Initialize popup on load
+removeReferralCheckbox?.addEventListener("change", async (e) => {
+  await saveOptions({ removeReferral: !!e.target.checked });
+  refreshPopup();
+});
+
+cleanHashCheckbox?.addEventListener("change", async (e) => {
+  await saveOptions({ cleanHash: !!e.target.checked });
+  refreshPopup();
+});
+
+updateRulesButton?.addEventListener("click", async () => {
+  setStatus("Updating rules…");
+  const ok = await requestRulesUpdate();
+  setStatus(ok ? "Rules updated. Click Refresh." : "Update failed. Try again.");
+});
+
+/** Run once on popup open */
 refreshPopup();
